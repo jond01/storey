@@ -3,9 +3,7 @@ from datetime import datetime
 
 import pytest
 import pytz
-import taosrest
-from taosrest import ConnectError
-from taosws import QueryError
+import taosws
 
 from storey import SyncEmitSource, build_flow
 from storey.targets import TDEngineTarget
@@ -21,44 +19,35 @@ def tdengine():
     db_name = "storey"
     supertable_name = "test_supertable"
 
-    # Setup
     if url.startswith("taosws"):
-        import taosws
-
         connection = taosws.connect(url)
-        db_prefix = ""
     else:
-        db_prefix = db_name + "."
-        connection = taosrest.connect(
+
+        connection = taosws.connect(
             url=url,
             user=user,
             password=password,
-            timeout=30,
         )
 
     try:
         connection.execute(f"DROP DATABASE {db_name};")
-    except (ConnectError, QueryError) as err:  # websocket connection raises QueryError
+    except taosws.QueryError as err:  # websocket connection raises QueryError
         if "Database not exist" not in str(err):
             raise err
 
     connection.execute(f"CREATE DATABASE {db_name};")
-
-    if not db_prefix:
-        connection.execute(f"USE {db_name}")
+    connection.execute(f"USE {db_name}")
 
     try:
-        connection.execute(f"DROP STABLE {db_prefix}{supertable_name};")
-    except (ConnectError, QueryError) as err:  # websocket connection raises QueryError
+        connection.execute(f"DROP STABLE {supertable_name};")
+    except taosws.QueryError as err:  # websocket connection raises QueryError
         if "STable not exist" not in str(err):
             raise err
 
-    connection.execute(
-        f"CREATE STABLE {db_prefix}{supertable_name} (time TIMESTAMP, my_string NCHAR(10)) TAGS (my_int INT);"
-    )
+    connection.execute(f"CREATE STABLE {supertable_name} (time TIMESTAMP, my_string NCHAR(10)) TAGS (my_int INT);")
 
     # Test runs
-    yield connection, url, user, password, db_name, supertable_name, db_prefix
+    yield connection, url, user, password, db_name, supertable_name
 
     # Teardown
     connection.execute(f"DROP DATABASE {db_name};")
@@ -68,14 +57,14 @@ def tdengine():
 @pytest.mark.parametrize("table_col", [None, "$key", "table"])
 @pytest.mark.skipif(not has_tdengine_credentials, reason="Missing TDEngine URL, user, and/or password")
 def test_tdengine_target(tdengine, table_col):
-    connection, url, user, password, db_name, supertable_name, db_prefix = tdengine
+    connection, url, user, password, db_name, supertable_name = tdengine
     time_format = "%d/%m/%y %H:%M:%S UTC%z"
 
     table_name = "test_table"
 
     # Table is created automatically only when using a supertable
     if not table_col:
-        connection.execute(f"CREATE TABLE {db_prefix}{table_name} (time TIMESTAMP, my_string NCHAR(10), my_int INT);")
+        connection.execute(f"CREATE TABLE {table_name} (time TIMESTAMP, my_string NCHAR(10), my_int INT);")
 
     controller = build_flow(
         [
@@ -118,23 +107,17 @@ def test_tdengine_target(tdengine, table_col):
     else:
         query_table = table_name
         where_clause = ""
-    result = connection.query(f"SELECT * FROM {db_prefix}{query_table} {where_clause} ORDER BY my_int;")
+    result = connection.query(f"SELECT * FROM {query_table} {where_clause} ORDER BY my_int;")
     result_list = []
     for row in result:
         row = list(row)
         for field_index, field in enumerate(result.fields):
-            typ = field.type() if url.startswith("taosws") else field["type"]
+            typ = field.type()
             if typ == "TIMESTAMP":
-                if url.startswith("taosws"):
-                    t = datetime.fromisoformat(row[field_index])
-                    # websocket returns a timestamp with the local time zone
-                    t = t.astimezone(pytz.UTC).replace(tzinfo=None)
-                    row[field_index] = t
-                else:
-                    t = row[field_index]
-                    # REST API returns a naive timestamp matching the local time zone
-                    t = t.astimezone(pytz.UTC).replace(tzinfo=None)
-                    row[field_index] = t
+                t = datetime.fromisoformat(row[field_index])
+                # websocket returns a timestamp with the local time zone
+                t = t.astimezone(pytz.UTC).replace(tzinfo=None)
+                row[field_index] = t
         result_list.append(row)
     if table_col:
         expected_result = [

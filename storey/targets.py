@@ -777,14 +777,13 @@ class TSDBTarget(_Batching, _Writer):
 class TDEngineTarget(_Batching, _Writer):
     """Writes incoming events to a TDEngine table.
 
-    :param url: TDEngine Websocket or REST API URL.
+    :param url: TDEngine Websocket URL. You an either provide a full URL (e.g. taosws://user:password@host:port) or
+                just the host and port (e.g. host:port) and provide the user and password separately.
     :param time_col: Name of the time column.
     :param columns: List of column names to be passed to the DataFrame constructor. Use = notation for renaming fields
         (e.g. write_this=event_field). Use $ notation to refer to metadata ($key, event_time=$time).
-    :param user: Username with which to connect. This is ignored when url is a Websocket URL, which should already
-        contain the username.
-    :param password: Password with which to connect. This is ignored when url is a Websocket URL, which should already
-        contain the password.
+    :param user: Username with which to connect.
+    :param password: Password with which to connect.
     :param database: Name of the database where events will be written.
     :param table: Name of the table in the database where events will be written. To set the table dynamically on a
         per-event basis, use the $ prefix to indicate the field that should be used for the table name, or $$ prefix to
@@ -796,7 +795,6 @@ class TDEngineTarget(_Batching, _Writer):
         all.
     :param tag_cols: List of column names to be used as tags. Must be specified together with supertable or not at
         all.
-    :param timeout: REST API timeout in seconds.
     :param time_format: If time_col is a string column, and its format is not compatible with ISO-8601, use this
         parameter to determine the expected format.
     :param max_events: Maximum number of events to write at a time. If None (default), all events will be written on
@@ -819,13 +817,9 @@ class TDEngineTarget(_Batching, _Writer):
         table_col: Optional[str] = None,
         supertable: Optional[str] = None,
         tag_cols: Union[str, List[str], None] = None,
-        timeout: Optional[int] = None,
         time_format: Optional[str] = None,
         **kwargs,
     ):
-        parsed_url = urlparse(url)
-        if parsed_url.scheme not in ("taosws", "http", "https"):
-            raise ValueError("URL must start with taosws://, http://, or https://")
 
         if table and table_col:
             raise ValueError("Cannot set both table and table_col")
@@ -846,6 +840,7 @@ class TDEngineTarget(_Batching, _Writer):
             kwargs["user"] = user
         if password:
             kwargs["password"] = password
+
         if database:
             kwargs["database"] = database
         if table:
@@ -856,8 +851,6 @@ class TDEngineTarget(_Batching, _Writer):
             kwargs["supertable"] = supertable
         if tag_cols:
             kwargs["tag_cols"] = tag_cols
-        if timeout:
-            kwargs["timeout"] = timeout
         if time_format:
             kwargs["time_format"] = time_format
 
@@ -885,33 +878,17 @@ class TDEngineTarget(_Batching, _Writer):
         self._user = user
         self._password = password
         self._database = database
-        self._timeout = timeout
-
-        self._connection = None
-        self._using_websocket = None
 
     def _init(self):
-        import taosrest
+        import taosws
 
         _Batching._init(self)
         _Writer._init(self)
-
-        parsed_url = urlparse(self._url)
-
-        if parsed_url.scheme == "taosws":
-            import taosws
-
-            self._using_websocket = True
+        if self._url.startswith("taosws://"):
             self._connection = taosws.connect(self._url)
-            self._connection.execute(f"USE {self._database}")
         else:
-            self._using_websocket = False
-            self._connection = taosrest.connect(
-                url=self._url,
-                user=self._user,
-                password=self._password,
-                timeout=self._timeout or 30,
-            )
+            self._connection = taosws.connect(url=self._url, user=self._user, password=self._password)
+        self._connection.execute(f"USE {self._database}")
 
     def _event_to_batch_entry(self, event):
         return self._event_to_writer_entry(event)
@@ -927,18 +904,12 @@ class TDEngineTarget(_Batching, _Writer):
     async def _emit(self, batch, batch_key, batch_time, batch_events, last_event_time=None):
         with StringIO() as b:
             b.write("INSERT INTO ")
-            if not self._using_websocket:
-                b.write(self._database)
-                b.write(".")
             if self._table:
                 b.write(self._table)
             else:  # table is dynamic
                 b.write(batch_key)
             if self._supertable:
                 b.write(" USING ")
-                if not self._using_websocket:
-                    b.write(self._database)
-                    b.write(".")
                 b.write(self._supertable)
                 b.write(" TAGS (")
                 for column_index in range(self._number_of_tags):
