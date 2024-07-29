@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+.NOTPARALLEL:
+
 .PHONY: all
 all:
 	$(error please pick a target)
@@ -50,11 +52,20 @@ flake8:
 	@echo "Running flake8 lint..."
 	@python -m flake8 $(FLAKE8_OPTIONS) $(CHECKED_IN_PYTHON_FILES)
 
+.PHONY: clean
+clean:
+	find storey tests integration -name '*.pyc' -exec rm {} \;
+
 .PHONY: test
-test:
-	find storey -name '*.pyc' -exec rm {} \;
-	find tests -name '*.pyc' -exec rm {} \;
+test: clean
 	python -m pytest --ignore=integration -rf -v .
+
+.PHONY: test-coverage
+test-coverage: clean
+	rm -f coverage_reports/unit_tests.coverage
+	COVERAGE_FILE=coverage_reports/unit_tests.coverage coverage run --rcfile=tests.coveragerc -m pytest --ignore=integration -rf -v .
+	@echo "Unit test coverage report:"
+	COVERAGE_FILE=coverage_reports/unit_tests.coverage coverage report --rcfile=tests.coveragerc
 
 .PHONY: bench
 bench:
@@ -62,9 +73,15 @@ bench:
 	python -m pytest --benchmark-json bench-results.json -rf -v bench/*.py
 
 .PHONY: integration
-integration:
-	find integration -name '*.pyc' -exec rm {} \;
+integration: clean
 	python -m pytest -rf -v integration
+
+.PHONY: integration-coverage
+integration-coverage: clean
+	rm -f coverage_reports/integration.coverage
+	COVERAGE_FILE=coverage_reports/integration.coverage coverage run --rcfile=tests.coveragerc -m pytest -rf -v integration
+	@echo "Integration test coverage report:"
+	COVERAGE_FILE=coverage_reports/integration.coverage coverage report --rcfile=tests.coveragerc
 
 .PHONY: env
 env:
@@ -90,3 +107,13 @@ set-version:
 docs: # Build html docs
 	rm -f docs/external/*.md
 	cd docs && make html
+
+.PHONY: coverage-combine
+coverage-combine:
+	rm -f coverage_reports/combined.coverage
+	COVERAGE_FILE=coverage_reports/combined.coverage coverage combine --keep coverage_reports/integration.coverage coverage_reports/unit_tests.coverage
+	@echo "Full coverage report:"
+	COVERAGE_FILE=coverage_reports/combined.coverage coverage report --rcfile=tests.coveragerc -i
+
+.PHONY: coverage
+coverage: test-coverage integration-coverage coverage-combine

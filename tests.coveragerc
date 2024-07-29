@@ -1,0 +1,10 @@
+[run]
+
+source=./storey
+
+omit =
+    */tests/*
+    */integration/*
+    test_*
+
+relative_files = True
